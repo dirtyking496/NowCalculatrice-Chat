@@ -10,15 +10,12 @@ const app = express();
 const root = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT || 10000);
 const ROOM = "nowcalculatrice-communal";
-if (!process.env.DATABASE_URL) {
-  console.error("DATABASE_URL is required");
-  process.exit(1);
-}
-const pool = new pg.Pool({
+const pool = process.env.DATABASE_URL ? new pg.Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: process.env.DATABASE_URL.includes("render.com") ? { rejectUnauthorized: false } : undefined,
   max: 5
-});
+}) : null;
+let dbReady = false;
 app.set("trust proxy", 1);
 app.use(helmet({ contentSecurityPolicy: false, crossOriginEmbedderPolicy: false }));
 app.use(express.json({ limit: "28mb" }));
@@ -42,8 +39,15 @@ async function initialize() {
   )`);
 }
 app.get("/api/health", async (_req, res) => {
-  try { await pool.query("SELECT 1"); res.json({ ok: true, service: "nowcalculatrice-chat" }); }
-  catch { res.status(503).json({ ok: false, error: "Database unavailable" }); }
+  try {
+    if (!dbReady || !pool) return res.status(503).json({ ok: false, error: "DATABASE_URL is not configured" });
+    await pool.query("SELECT 1");
+    res.json({ ok: true, service: "nowcalculatrice-chat" });
+  } catch { res.status(503).json({ ok: false, error: "Database unavailable" }); }
+});
+app.use("/api/", (req, res, next) => {
+  if (!dbReady || !pool) return res.status(503).json({ error: "Chat database is not configured yet." });
+  next();
 });
 app.get("/api/messages", async (req, res) => {
   const after = Math.max(0, Number(req.query.after || 0));
@@ -82,6 +86,7 @@ app.post("/api/attachments", async (req, res) => {
   if (!validSender(sender) || !allowed.includes(mime) || !data?.length || data.length > 20 * 1024 * 1024)
     return res.status(400).json({ error: "Fichier invalide (20 Mo maximum)." });
   const id = crypto.randomUUID();
+  if (!pool || !dbReady) return res.status(503).json({ error: "Chat database is not configured yet." });
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
@@ -110,5 +115,7 @@ app.get("/api/attachments/:id", async (req, res) => {
 });
 app.use(express.static(root, { index: "index.html" }));
 app.get("*", (_req, res) => res.sendFile(path.join(root, "index.html")));
-initialize().then(() => app.listen(PORT, "0.0.0.0", () => console.log("NowCalculatrice chat listening on " + PORT)))
-  .catch(e => { console.error("Database initialization failed", e); process.exit(1); });
+app.listen(PORT, "0.0.0.0", () => console.log("NowCalculatrice chat listening on " + PORT));
+if (pool) initialize().then(() => { dbReady = true; console.log("Chat database ready"); })
+  .catch(e => console.error("Database initialization failed; configure DATABASE_URL in Render", e));
+else console.warn("DATABASE_URL is missing; chat API is paused until Render environment is configured.");
