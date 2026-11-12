@@ -29,13 +29,14 @@ const validSender = v => /^[a-zA-Z0-9_-]{12,80}$/.test(String(v ?? ""));
 const validColor = v => /^#[0-9a-fA-F]{6}$/.test(String(v ?? ""));
 
 async function initialize() {
-  await pool.query(`CREATE TABLE IF NOT EXISTS chat_messages (
+  await pool.query("CREATE SCHEMA IF NOT EXISTS nowcalc_chat");
+  await pool.query(`CREATE TABLE IF NOT EXISTS nowcalc_chat.chat_messages (
     id BIGSERIAL PRIMARY KEY, room_id TEXT NOT NULL, sender_id TEXT NOT NULL,
     nickname VARCHAR(32) NOT NULL, color VARCHAR(7) NOT NULL,
     body TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
   )`);
-  await pool.query("CREATE INDEX IF NOT EXISTS chat_messages_room_id_id_idx ON chat_messages(room_id,id)");
-  await pool.query(`CREATE TABLE IF NOT EXISTS chat_attachments (
+  await pool.query("CREATE INDEX IF NOT EXISTS chat_messages_room_id_id_idx ON nowcalc_chat.chat_messages(room_id,id)");
+  await pool.query(`CREATE TABLE IF NOT EXISTS nowcalc_chat.chat_attachments (
     id UUID PRIMARY KEY, sender_id TEXT NOT NULL, mime TEXT NOT NULL,
     filename TEXT NOT NULL, data BYTEA NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
   )`);
@@ -49,7 +50,7 @@ app.get("/api/messages", async (req, res) => {
   if (!Number.isSafeInteger(after)) return res.status(400).json({ error: "Invalid cursor" });
   try {
     const { rows } = await pool.query(
-      "SELECT id,sender_id,nickname,color,body,created_at FROM chat_messages WHERE room_id=$1 AND id>$2 ORDER BY id ASC LIMIT 100",
+      "SELECT id,sender_id,nickname,color,body,created_at FROM nowcalc_chat.chat_messages WHERE room_id=$1 AND id>$2 ORDER BY id ASC LIMIT 100",
       [ROOM, after]
     );
     res.json({ messages: rows });
@@ -63,7 +64,7 @@ app.post("/api/messages", async (req, res) => {
   if (!validSender(sender) || !body || body.length > 4000) return res.status(400).json({ error: "Message ou profil invalide." });
   try {
     const { rows } = await pool.query(
-      "INSERT INTO chat_messages(room_id,sender_id,nickname,color,body) VALUES($1,$2,$3,$4,$5) RETURNING id,sender_id,nickname,color,body,created_at",
+      "INSERT INTO nowcalc_chat.chat_messages(room_id,sender_id,nickname,color,body) VALUES($1,$2,$3,$4,$5) RETURNING id,sender_id,nickname,color,body,created_at",
       [ROOM, sender, nickname, color, body]
     );
     res.status(201).json({ message: rows[0] });
@@ -84,10 +85,10 @@ app.post("/api/attachments", async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
-    await client.query("INSERT INTO chat_attachments(id,sender_id,mime,filename,data) VALUES($1,$2,$3,$4,$5)", [id,sender,mime,filename,data]);
+    await client.query("INSERT INTO nowcalc_chat.chat_attachments(id,sender_id,mime,filename,data) VALUES($1,$2,$3,$4,$5)", [id,sender,mime,filename,data]);
     const body = JSON.stringify({ __nowcalc_attachment: 1, id, mime, name: filename });
     const { rows } = await client.query(
-      "INSERT INTO chat_messages(room_id,sender_id,nickname,color,body) VALUES($1,$2,$3,$4,$5) RETURNING id,sender_id,nickname,color,body,created_at",
+      "INSERT INTO nowcalc_chat.chat_messages(room_id,sender_id,nickname,color,body) VALUES($1,$2,$3,$4,$5) RETURNING id,sender_id,nickname,color,body,created_at",
       [ROOM,sender,nickname,color,body]
     );
     await client.query("COMMIT");
@@ -99,7 +100,7 @@ app.post("/api/attachments", async (req, res) => {
 app.get("/api/attachments/:id", async (req, res) => {
   if (!/^[0-9a-f-]{36}$/i.test(req.params.id)) return res.sendStatus(404);
   try {
-    const { rows } = await pool.query("SELECT mime,filename,data FROM chat_attachments WHERE id=$1", [req.params.id]);
+    const { rows } = await pool.query("SELECT mime,filename,data FROM nowcalc_chat.chat_attachments WHERE id=$1", [req.params.id]);
     if (!rows.length) return res.sendStatus(404);
     res.type(rows[0].mime);
     res.setHeader("Content-Disposition", "inline; filename*=UTF-8''" + encodeURIComponent(rows[0].filename));
